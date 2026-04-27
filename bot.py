@@ -5,6 +5,7 @@ Telegram-бот для звітування команди.
 """
 
 import os
+import json
 import logging
 from datetime import datetime, time
 from zoneinfo import ZoneInfo
@@ -142,12 +143,23 @@ def save_users(users: dict) -> None:
 # ============ GOOGLE SHEETS ============
 
 def get_sheet():
-    """Підключення до Google Sheets."""
+    """Підключення до Google Sheets.
+    Шукає credentials у двох місцях:
+    1. Змінна GOOGLE_CREDS_JSON (для Railway/Render — повний JSON як текст)
+    2. Файл GOOGLE_CREDS_PATH (для локального запуску)
+    """
     scopes = [
         "https://www.googleapis.com/auth/spreadsheets",
         "https://www.googleapis.com/auth/drive",
     ]
-    creds = Credentials.from_service_account_file(GOOGLE_CREDS_PATH, scopes=scopes)
+
+    creds_json_str = os.getenv("GOOGLE_CREDS_JSON")
+    if creds_json_str:
+        creds_dict = json.loads(creds_json_str)
+        creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+    else:
+        creds = Credentials.from_service_account_file(GOOGLE_CREDS_PATH, scopes=scopes)
+
     client = gspread.authorize(creds)
     return client.open_by_key(SPREADSHEET_ID)
 
