@@ -24,7 +24,7 @@ from zoneinfo import ZoneInfo
 
 import gspread
 from google.oauth2.service_account import Credentials
-from telegram import Update, ReplyKeyboardRemove
+from telegram import Update, ReplyKeyboardRemove, ReplyKeyboardMarkup, KeyboardButton, BotCommand
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -35,6 +35,36 @@ from telegram.ext import (
 )
 
 from quotes import QUOTES
+
+
+# ============ КНОПКИ КЛАВІАТУРИ ============
+
+BTN_REPORT = "📝 Подати звіт"
+BTN_MY_ID = "🆔 Мій ID"
+BTN_TODAY = "📊 Сьогодні"
+BTN_WEEK = "🗓 Тиждень"
+BTN_TEAM = "👥 Команда"
+BTN_HELP = "❔ Допомога"
+
+
+def get_keyboard(is_admin: bool) -> ReplyKeyboardMarkup:
+    """Повертає клавіатуру залежно від ролі."""
+    if is_admin:
+        keyboard = [
+            [BTN_REPORT, BTN_TODAY],
+            [BTN_WEEK, BTN_TEAM],
+            [BTN_MY_ID, BTN_HELP],
+        ]
+    else:
+        keyboard = [
+            [BTN_REPORT],
+            [BTN_MY_ID, BTN_HELP],
+        ]
+    return ReplyKeyboardMarkup(
+        keyboard,
+        resize_keyboard=True,  # компактний розмір кнопок
+        is_persistent=True,    # клавіатура завжди залишається
+    )
 
 # ============ НАЛАШТУВАННЯ ============
 
@@ -307,7 +337,83 @@ ASKING = 1
 
 # ============ ХЕНДЛЕРИ ЗВІТУ ============
 
+async def menu_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Команда /menu або /start (поза розмовою) — показує меню."""
+    user_id = update.effective_user.id
+    users = load_users()
+    is_admin = (user_id == ADMIN_ID)
+
+    if user_id not in users and not is_admin:
+        await update.message.reply_text(
+            "❌ Тебе ще не додано до системи звітування.\n"
+            f"Передай свій Telegram ID керівнику: <code>{user_id}</code>",
+            parse_mode="HTML",
+        )
+        return
+
+    name = users.get(user_id, {}).get("name", "Керівник")
+
+    if is_admin:
+        text = (
+            f"Привіт, {name}! 👋\n\n"
+            "Обери дію з кнопок нижче:\n"
+            "📝 <b>Подати звіт</b> — почати щоденний звіт\n"
+            "📊 <b>Сьогодні</b> — підсумок за сьогодні\n"
+            "🗓 <b>Тиждень</b> — звіт за тиждень з порівнянням\n"
+            "👥 <b>Команда</b> — список співробітників\n"
+            "🆔 <b>Мій ID</b> — твій Telegram ID\n"
+            "❔ <b>Допомога</b> — повний список команд"
+        )
+    else:
+        text = (
+            f"Привіт, {name}! 👋\n\n"
+            "Обери дію з кнопок нижче:\n"
+            "📝 <b>Подати звіт</b> — почати щоденний звіт\n"
+            "🆔 <b>Мій ID</b> — твій Telegram ID\n"
+            "❔ <b>Допомога</b> — підказки"
+        )
+
+    await update.message.reply_text(
+        text,
+        parse_mode="HTML",
+        reply_markup=get_keyboard(is_admin),
+    )
+
+
+async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Команда /help або кнопка Допомога."""
+    is_admin = (update.effective_user.id == ADMIN_ID)
+    if is_admin:
+        text = (
+            "<b>Доступні команди:</b>\n\n"
+            "📝 /start — подати звіт\n"
+            "❌ /cancel — скасувати поточний звіт\n"
+            "🆔 /myid — мій Telegram ID\n"
+            "📊 /today — підсумок дня\n"
+            "🗓 /week — тижневий звіт\n"
+            "👥 /list — список команди\n"
+            "➕ /add &lt;id&gt; &lt;ім'я&gt; &lt;роль&gt; — додати співробітника\n"
+            "➖ /remove &lt;id&gt; — видалити співробітника\n\n"
+            "<b>Ролі:</b> direct, storiesmaker, deputy, boss\n\n"
+            "Або просто користуйся кнопками внизу 👇"
+        )
+    else:
+        text = (
+            "<b>Доступні команди:</b>\n\n"
+            "📝 /start — подати звіт\n"
+            "❌ /cancel — скасувати поточний звіт\n"
+            "🆔 /myid — мій Telegram ID\n\n"
+            "Або просто користуйся кнопками внизу 👇"
+        )
+    await update.message.reply_text(
+        text,
+        parse_mode="HTML",
+        reply_markup=get_keyboard(is_admin),
+    )
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Запускає звіт (як від /start, так і від кнопки '📝 Подати звіт')."""
     user_id = update.effective_user.id
     users = load_users()
 
@@ -349,7 +455,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         f"Відповідай по одному повідомленню. /cancel — скасувати.\n\n"
         f"<b>Питання 1/{len(questions)}:</b>\n{questions[0]}",
         parse_mode="HTML",
-        reply_markup=ReplyKeyboardRemove(),
+        reply_markup=ReplyKeyboardRemove(),  # ховаємо клавіатуру під час звіту
     )
     return ASKING
 
@@ -381,6 +487,7 @@ async def receive_answer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         extra_a = None
         main_answers = answers_full
 
+    is_admin = (update.effective_user.id == ADMIN_ID)
     try:
         save_report(role_key, context.user_data["name"], main_answers, extra_q, extra_a)
         quote = random.choice(QUOTES)
@@ -389,12 +496,14 @@ async def receive_answer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             f"💭 <i>{quote}</i>\n\n"
             "Гарного вечора! 🌙",
             parse_mode="HTML",
+            reply_markup=get_keyboard(is_admin),
         )
     except Exception as e:
         logger.exception("Помилка запису у Google Sheets")
         await update.message.reply_text(
             f"⚠️ Звіт прийнято, але не вдалося записати у таблицю.\n"
-            f"Помилка: {e}\n\nЗвернись до керівника."
+            f"Помилка: {e}\n\nЗвернись до керівника.",
+            reply_markup=get_keyboard(is_admin),
         )
 
     context.user_data.clear()
@@ -403,9 +512,10 @@ async def receive_answer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data.clear()
+    is_admin = (update.effective_user.id == ADMIN_ID)
     await update.message.reply_text(
-        "Звіт скасовано. Напиши /start щоб почати знову.",
-        reply_markup=ReplyKeyboardRemove(),
+        "Звіт скасовано. Натисни '📝 Подати звіт' щоб почати знову.",
+        reply_markup=get_keyboard(is_admin),
     )
     return ConversationHandler.END
 
@@ -836,6 +946,58 @@ async def monday_check(context: ContextTypes.DEFAULT_TYPE) -> None:
                 logger.warning(f"Не вдалось надіслати питання про причини {tid}: {e}")
 
 
+# ============ ОБРОБНИК КНОПОК ============
+
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обробляє натискання текстових кнопок з клавіатури (поза розмовою)."""
+    text = (update.message.text or "").strip()
+
+    if text == BTN_REPORT:
+        # Інакше неможливо викликати start всередині не-розмови — відсилаємо підказку
+        await update.message.reply_text("Запускаю звіт... Напиши /start")
+    elif text == BTN_MY_ID:
+        await my_id(update, context)
+    elif text == BTN_TODAY:
+        await today_cmd(update, context)
+    elif text == BTN_WEEK:
+        await week_cmd(update, context)
+    elif text == BTN_TEAM:
+        await list_users(update, context)
+    elif text == BTN_HELP:
+        await help_cmd(update, context)
+    # Якщо це не кнопка — мовчимо (бо може бути просто чат)
+
+
+async def setup_bot_commands(app: Application) -> None:
+    """Реєструє команди в меню Telegram (синя кнопка біля скріпки)."""
+    common_commands = [
+        BotCommand("start", "📝 Подати звіт"),
+        BotCommand("menu", "📋 Головне меню"),
+        BotCommand("cancel", "❌ Скасувати звіт"),
+        BotCommand("myid", "🆔 Мій Telegram ID"),
+        BotCommand("help", "❔ Допомога"),
+    ]
+    admin_commands = common_commands + [
+        BotCommand("today", "📊 Підсумок сьогодні"),
+        BotCommand("week", "🗓 Тижневий звіт"),
+        BotCommand("list", "👥 Список команди"),
+        BotCommand("add", "➕ Додати співробітника"),
+        BotCommand("remove", "➖ Видалити співробітника"),
+    ]
+    # Базові — для всіх
+    await app.bot.set_my_commands(common_commands)
+    # Розширені — тільки для адміна
+    if ADMIN_ID:
+        from telegram import BotCommandScopeChat
+        try:
+            await app.bot.set_my_commands(
+                admin_commands,
+                scope=BotCommandScopeChat(chat_id=ADMIN_ID),
+            )
+        except Exception as e:
+            logger.warning(f"Не вдалось встановити команди для адміна: {e}")
+
+
 # ============ MAIN ============
 
 def main() -> None:
@@ -846,10 +1008,15 @@ def main() -> None:
     if ADMIN_ID == 0:
         raise RuntimeError("Не задано ADMIN_ID в env")
 
-    app = Application.builder().token(BOT_TOKEN).build()
+    app = Application.builder().token(BOT_TOKEN).post_init(setup_bot_commands).build()
 
+    # ConversationHandler:
+    # - точка входу: команда /start АБО натискання кнопки "📝 Подати звіт"
     conv = ConversationHandler(
-        entry_points=[CommandHandler("start", start)],
+        entry_points=[
+            CommandHandler("start", start),
+            MessageHandler(filters.Regex(f"^{BTN_REPORT}$"), start),
+        ],
         states={
             ASKING: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_answer)],
         },
@@ -857,12 +1024,18 @@ def main() -> None:
     )
     app.add_handler(conv)
 
+    # Команди
+    app.add_handler(CommandHandler("menu", menu_cmd))
+    app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("add", add_user))
     app.add_handler(CommandHandler("remove", remove_user))
     app.add_handler(CommandHandler("list", list_users))
     app.add_handler(CommandHandler("myid", my_id))
     app.add_handler(CommandHandler("today", today_cmd))
     app.add_handler(CommandHandler("week", week_cmd))
+
+    # Обробник інших кнопок (Мій ID, Сьогодні, Тиждень, Команда, Допомога)
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, button_handler))
 
     job_queue = app.job_queue
     job_queue.run_daily(
